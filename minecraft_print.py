@@ -11,6 +11,7 @@ import shlex
 import operator
 import codecs
 
+
 from math import floor
 try:
     import readline
@@ -23,13 +24,13 @@ class PlayerNotFound(RuntimeError): pass
 
 class MinecraftPrint:
 
-    def __init__(self, level, output):
+    def __init__(self, level, output, marker1, marker2):
         self.level_name = level
         self.output_name = output + '.stl'
 
         #The list of goodness and markers
         #Format: [[chunk_x, chunk_z, block_x, block_z, block_y]]
-        self.markers = []
+        self.markers = [marker1, marker2]
 
         self.chunk_positions = []
         self.num_chunks = 0
@@ -37,114 +38,254 @@ class MinecraftPrint:
 
         self.diamond_check = []
         self.object_array = []
-        
+
         #Data value for each block type
-        self.diamond = 57
-        self.gold = 41
-        self.iron = 42
+        self.glass = 20
+        self.carpet = 171
+        self.glass_pane = 102
+        self.lily_pad = 111
+        self.vines = 106
+        self.torch = 50
+        self.grass = 31
+        self.deadbush = 32
+        self.tall_grass = 175
+        self.snow = 78
+
+
+        self.no_print = {
+                self.glass : True,
+                self.carpet: True,
+                self.glass_pane : True,
+                self.lily_pad : True,
+                self.vines : True,
+                self.torch : True,
+                self.grass : True,
+                self.deadbush: True,
+                self.tall_grass : True,
+                self.snow: True,
+            }
 
     def generate(self):
-        self.find_marked_area()
-        self.copy_marked_area()
-        self.generate_stl()
-    
-    def find_marked_area(self):
         self.world = mclevel.loadWorld(self.level_name)
 
-        #Load chunks and determine minimize indexes
-        self.chunk_positions = list(self.world.allChunks)
-        self.num_chunks = len(self.chunk_positions)
+        self.copy_marked_area()
+        self.fill_cavities()
+        self.remove_floating()
+        self.generate_stl()
 
-        #Just a little user feedback on the progress
-        print "Processing level: " + self.level_name
-        print "Scanning level for markers..."
-        self.chunk_counter = 1
-        
-        self.find_markers()
-        
-        print '100%'
-        
-    def find_markers(self):
-        #Iterate through chunks, looking for block combination
-        for x_pos, z_pos in self.chunk_positions:
-            #User feedback
-            if self.chunk_counter % 10 == 0:
-                print str(self.chunk_counter/float(self.num_chunks)*100) + "%"
-            self.chunk_counter += 1
-
-            chunk = self.world.getChunk(x_pos, z_pos)
-            #Does this chunk have a diamond block?
-
-            diamond_check = numpy.where(chunk.Blocks == self.diamond)
-            if len(diamond_check[0]) > 0:
-                for dx, dz, dy in zip(diamond_check[0], diamond_check[1], diamond_check[2]):
-
-                    #We found diamond, but is it a marker (diamond, gold, and iron in asc or desc vertical order)
-                    #If so, define the diamond block coordinates as the marker and remove the marker from the map (along with everything above and below)
-                    if dy > 1 and chunk.Blocks[dx, dz, dy - 1] == self.gold and chunk.Blocks[dx, dz, dy - 2] == self.iron:
-                        self.markers.append([x_pos, z_pos, dx, dz, dy])
-                        for y in range(256):
-                            chunk.Blocks[dx, dz, y] = 0
-                    elif dy < 126 and chunk.Blocks[dx, dz, dy + 1] == self.gold and chunk.Blocks[dx, dz, dy + 2] == self.iron:
-                        self.markers.append([x_pos, z_pos, dx, dz, dy])
-                        for y in range(256):
-                            chunk.Blocks[dx, dz, y] = 0
-    
     def copy_marked_area(self):
-        #Now we have the markers. Time to get serious 
+        # Now we have the markers. Time to get serious
         if len(self.markers) == 2:
             print "Congrats, looks like we have two markers"
             print "..."
             print "Capturing marked area... this may take a minute..."
 
-            #Calculate x_min and x_max
-            if self.markers[0][0] < self.markers[1][0]:
-                x_min = [self.markers[0][0], self.markers[0][2]]
-                x_max = [self.markers[1][0], self.markers[1][2]]
-            elif self.markers[0][0] > self.markers[1][0]:
-                x_min = [self.markers[1][0], self.markers[1][2]]
-                x_max = [self.markers[0][0], self.markers[0][2]]
+            # Calculate x0 and x1
+            x0 = (16 * self.markers[0][0]) + self.markers[0][2]
+            x1 = (16 * self.markers[1][0]) + self.markers[1][2]
+            x_len = 0
+            if x0 < x1:
+                x_len = x1 - x0
             else:
-                x_min = [self.markers[0][0], min(self.markers[0][2], self.markers[1][2])]
-                x_max = [self.markers[0][0], max(self.markers[0][2], self.markers[1][2])]
+                x_len = x0 - x1
+                x0, x1 = x1, x0
 
-            #Calculate z_min and z_max
-            if self.markers[0][1] < self.markers[1][1]:
-                z_min = [self.markers[0][1], self.markers[0][3]]
-                z_max = [self.markers[1][1], self.markers[1][3]]
-            elif self.markers[0][1] > self.markers[1][1]:
-                z_min = [self.markers[1][1], self.markers[1][3]]
-                z_max = [self.markers[0][1], self.markers[0][3]]
+            # Calculate y0 and y1
+            y0 = min(self.markers[0][4], self.markers[1][4])
+            y1 = max(self.markers[0][4], self.markers[1][4])
+
+            y_len = y1 - y0
+
+            # Calculate z0 and z1
+            z0 = (16 * self.markers[0][1]) + self.markers[0][3]
+            z1 = (16 * self.markers[1][1]) + self.markers[1][3]
+            z_len = 0
+            if z0 < z1:
+                z_len = z1 - z0
             else:
-                z_min = [self.markers[0][1], min(self.markers[0][3], self.markers[1][3])]
-                z_max = [self.markers[0][1], max(self.markers[0][3], self.markers[1][3])]
+                z_len = z0 - z1
+                z0, z1 = z1, z0
 
-            #Calculate y_min and y_max
-            y_min = min(self.markers[0][4], self.markers[1][4])
-            y_max = max(self.markers[0][4], self.markers[1][4])
+            print "Area is", x_len, y_len, z_len
 
-            #Construct an array to fit the object
-            self.object_array = [[[0 for z in xrange((z_max[0] - z_min[0] + 1) * 16)] for y in xrange(y_max - y_min + 1)] for x in xrange((x_max[0] - x_min[0] + 1) * 16)]
 
-            #Copy marked blocks to object_array
-            for x_pos in range(x_min[0], x_max[0] + 1):
-                for z_pos in range(z_min[0], z_max[0] + 1):
-                    chunk = self.world.getChunk(x_pos, z_pos)
-                    for x in range(16):
-                        for z in range(16):
-                            for y in range(y_max - y_min + 1):
-                                if (x_pos == x_min[0] and x < x_min[1]) or (x_pos == x_max[0] and x > x_max[1]):
-                                    block_type = 0
-                                elif (z_pos == z_min[0] and z < z_min[1]) or (z_pos == z_max[0] and z > z_max[1]):
-                                    block_type = 0
-                                else:
-                                    block_type = chunk.Blocks[x, z, y_min + y]
-                                #print str((16 * (x_pos + offsetx)) + x) + ", " + str(y) + ", " + str((16 * (z_pos + offsetz)) + z)
-                                self.object_array[(16 * (x_pos -x_min[0])) + x][y][(16 * (z_pos - z_min[0])) + z] = block_type
+            # Construct an array to fit the object
+            self.object_array = [[[0 for z in xrange(z_len)] for y in xrange(y_len)] for x in xrange(x_len)]
+
+
+            chunks = {}
+
+            # Copy marked blocks to object_array
+            for x in range(x_len):
+                cx = (x + x0) / 16
+                bx = (x + x0) % 16
+                for z in range(z_len):
+                    cz = (z + z0) / 16
+                    bz = (z + z0) % 16
+                    c = (cx, cz)
+                    chunk = None
+                    if chunks.has_key(c):
+                        chunk = chunks[c]
+                    else:
+                        chunk = self.world.getChunk(*c)
+                        chunks[c] = chunk
+                    for y in range(y_len):
+                        by = y + y0
+                        block_type = 0
+                        block_type = chunk.Blocks[bx, bz, by]
+                        if block_type in self.no_print:
+                            block_type = 0
+                        self.object_array[x][y][z_len-z-1] = block_type
 
         else:
             print "Freak out! There are somehow more or less than 2 markers!"
-            
+
+
+    def fill_cavities(self):
+        print "fill_cavities"
+        x_len = len(self.object_array)
+        y_len = len(self.object_array[0])
+        z_len = len(self.object_array[0][0])
+
+        size = x_len * y_len * z_len
+        print "size", size
+
+        # make flat bottom
+        for x in range(x_len):
+            for z in range(z_len):
+                self.object_array[x][0][z] = 1
+
+        # make flat sides
+        for x in range(x_len):
+            for z in [0, z_len-1]:
+                self._make_flat(x,z,y_len)
+
+        for z in range(z_len):
+            for x in [0, x_len-1]:
+                self._make_flat(x,z,y_len)
+
+
+
+        not_cavity = {}
+        for y in range(y_len-1, -1, -1):
+            for x in range(x_len):
+                for z in range(z_len):
+                    if self.object_array[x][y][z] == 0 and \
+                        not not_cavity.has_key((x,y,z)):
+                        cavity, is_cavity = self._drain(x,y,z,x_len,y_len,z_len)
+                        if len(cavity) > 0:
+                            if is_cavity:
+                                print "filling in cavity of size", len(cavity)
+                                for x0,y0,z0 in cavity:
+                                    self.object_array[x0][y0][z0] = 1
+                            else:
+                                not_cavity.update(cavity)
+                                print len(not_cavity)
+    def remove_floating(self):
+        print "Removing Floating Islands"
+        x_len = len(self.object_array)
+        y_len = len(self.object_array[0])
+        z_len = len(self.object_array[0][0])
+
+        not_island = {}
+        for y in range(y_len-1, -1, -1):
+            for x in range(x_len):
+                for z in range(z_len):
+                    if self.object_array[x][y][z] > 0 and \
+                        not not_island.has_key((x,y,z)):
+                        island, is_island = self._island(x,y,z,x_len,y_len,z_len)
+                        if len(island) > 0:
+                            if is_island:
+                                print "removing island of size", len(island)
+                                for x0,y0,z0 in island:
+                                    self.object_array[x0][y0][z0] = 0
+                            else:
+                                not_island.update(island)
+                                print len(not_island)
+
+
+    def _make_flat(self, x,z, y_len):
+        found = False
+        for y in range(y_len-1,-1,-1):
+            if self.object_array[x][y][z] > 0:
+                found = True
+                continue
+            if found and self.object_array[x][y][z] == 0:
+                self.object_array[x][y][z] = 1
+
+
+    sides = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ]
+
+    def _drain(self, x, y, z, x_len, y_len, z_len):
+        cavity = {}
+        is_cavity = True
+        stack = []
+        stack.append((x,y,z))
+        while len(stack) > 0:
+            pos = stack.pop()
+
+            if cavity.has_key(pos):
+                continue
+            cavity[pos] = True
+
+            x, y, z = pos
+            for dx, dy, dz in self.sides:
+                x0 = x + dx
+                y0 = y + dy
+                z0 = z + dz
+                if x0 >= 0 and \
+                   y0 >= 0 and \
+                   z0 >= 0 and \
+                   x0 < x_len and \
+                   y0 < y_len and \
+                   z0 < z_len:
+
+                    if self.object_array[x0][y0][z0] == 0:
+                        stack.append((x0,y0,z0))
+                else:
+                    is_cavity = False
+        return cavity, is_cavity
+
+    def _island(self, x, y, z, x_len, y_len, z_len):
+        island = {}
+        is_island = True
+        stack = []
+        stack.append((x,y,z))
+        while len(stack) > 0:
+            pos = stack.pop()
+
+            if island.has_key(pos):
+                continue
+            island[pos] = True
+
+
+            x, y, z = pos
+            if y == 0:
+                is_island = False
+
+            for dx, dy, dz in self.sides:
+                x0 = x + dx
+                y0 = y + dy
+                z0 = z + dz
+                if x0 >= 0 and \
+                   y0 >= 0 and \
+                   z0 >= 0 and \
+                   x0 < x_len and \
+                   y0 < y_len and \
+                   z0 < z_len:
+
+                    if self.object_array[x0][y0][z0] > 0:
+                        stack.append((x0,y0,z0))
+        return island, is_island
+
+
     def generate_stl(self):
         """Generate STL file"""
         filename = self.output_name
@@ -154,12 +295,12 @@ class MinecraftPrint:
             height = len(self.object_array[0])
         except:
             print self.object_array
-        depth = len(self.object_array[0][0])    
+        depth = len(self.object_array[0][0])
 
         str_o = "solid Minecraft\n";
         str_e = "    endloop\n  endfacet\n"
         str_s = "  facet normal %d %d %d\n    outer loop\n"
-        str_v = "      vertex %d %d %d\n"    
+        str_v = "      vertex %d %d %d\n"
 
         print "start"
 
